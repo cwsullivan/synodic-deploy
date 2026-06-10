@@ -1,0 +1,2406 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>Synodic</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Michroma&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* Single source of truth for the "active glow" palette shared by every
+         toggleable button in the HUD: Controls (.game-btn.paused), command
+         card (.cmd-btn.active), and Perspective/Solar North (.minimap-view-btn.matched). */
+      :root {
+        --hud-font: 'Orbitron', 'Eurostile Extended', 'Bank Gothic', sans-serif;
+        --hud-font-display: 'Orbitron', 'Eurostile Extended', 'Bank Gothic', sans-serif;
+        --hud-letter-spacing: 0.035em;
+        --hud-letter-spacing-wide: 0.09em;
+        --active-bg: rgba(50, 40, 20, 0.9);
+        --active-bg-hover: rgba(70, 56, 28, 0.95);
+        --active-border: rgba(220, 180, 90, 0.55);
+        --active-border-hover: rgba(240, 200, 110, 0.7);
+        --active-text: #f2dfa8;
+        --active-text-dim: #d8c690;
+        --active-glow: 0 0 8px rgba(220, 180, 90, 0.45);
+        --active-glow-hover: 0 0 10px rgba(240, 200, 110, 0.55);
+        --legend-frame: rgba(191, 151, 76, 0.58);
+        --legend-frame-bright: rgba(236, 205, 132, 0.9);
+        --legend-panel-bg: rgba(7, 12, 28, 0.9);
+        --legend-panel-top: rgba(20, 29, 53, 0.92);
+        --legend-panel-bottom: rgba(6, 9, 22, 0.92);
+        --legend-text: #efe5c7;
+        --legend-text-dim: rgba(220, 222, 235, 0.72);
+        --legend-text-muted: rgba(177, 186, 205, 0.62);
+        --legend-shadow: 0 12px 30px rgba(0, 0, 0, 0.42), 0 0 32px rgba(191, 151, 76, 0.1);
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { overscroll-behavior: none; }
+      body {
+        overflow: hidden;
+        background: #050510;
+        font-family: var(--hud-font);
+      }
+      canvas { display: block; touch-action: none; }
+      /* Loading screen — visible before JS bundle runs, hidden after first frame */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 50%, transparent 20%, #000000 100%), #060608;
+        font-family: var(--hud-font);
+        color: #cdd9ee;
+        transition: opacity 350ms ease;
+      }
+      #loading-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #loading-screen .loading-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 22px;
+        position: relative;
+        z-index: 2;
+        /* Whole text block fades in over the first 3 s; the marbles + grid
+           fade in afterwards (handled in loading-canvas.ts). The card's own
+           opacity multiplies with the per-element opacity rules below, so the
+           "Loading" → "New Game" swap on `.ready` still works mid-fade. */
+        opacity: 0;
+        animation: loading-text-fade-in 3s ease forwards;
+      }
+      @keyframes loading-text-fade-in {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      #loading-screen .loading-system {
+        position: relative;
+        width: 360px;
+        height: 360px;
+      }
+      /* Fullscreen WebGL canvas: paints brass wave fronts where the marble
+         field is strong, transparent elsewhere so the page's radial-gradient
+         shows through. No visible canvas edge anywhere. */
+      #loading-screen #loading-canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: 0;
+      }
+      /* Logotype overlays the planetary system: the "O" ring wraps the Sun.
+         letter-spacing matches the visual gap between the flanking letters
+         and the central ring, so S-Y, Y-N, N-O, O-D, D-I, I-C all read as a
+         single, evenly-spaced wordmark. The 1em value (= font-size) is what
+         pushes the "D" past Earth's orbit, into the gap between the rings. */
+      #loading-screen .loading-title {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        width: 440px;
+        z-index: 2;
+        font-family: 'Michroma', 'Orbitron', 'Eurostile Extended', 'Bank Gothic', sans-serif;
+        font-size: 28px;
+        font-weight: 400;
+        letter-spacing: 0.85em;
+        text-transform: uppercase;
+        color: #e6ecff;
+        text-shadow:
+          0 0 14px rgba(125, 200, 255, 0.35),
+          0 4px 12px rgba(125, 200, 255, 0.55),
+          0 8px 24px rgba(90, 170, 255, 0.4),
+          0 16px 40px rgba(60, 140, 230, 0.25);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      #loading-screen .loading-title .title-pre {
+        text-align: right;
+      }
+      #loading-screen .loading-title .title-post {
+        text-align: left;
+        padding-left: 0.85em;
+      }
+      /* The middle letter is rendered as a ring centered on the Sun. Border
+         and shadow stack mirror the wordmark's color + downward blue bloom so
+         the ring reads as the same letterform style as S-Y-N-D-I-C. */
+      #loading-screen .loading-title .title-o {
+        width: 60px;
+        height: 60px;
+        border: 4px solid #e6ecff;
+        border-radius: 50%;
+        font-size: 0;
+        box-shadow:
+          0 0 14px rgba(125, 200, 255, 0.35),
+          0 4px 12px rgba(125, 200, 255, 0.55),
+          0 8px 24px rgba(90, 170, 255, 0.4),
+          0 16px 40px rgba(60, 140, 230, 0.25);
+      }
+      #loading-screen .loading-sub {
+        font-size: 13px;
+        font-weight: 400;
+        letter-spacing: 0.1em;
+        color: #7e8aa6;
+        text-transform: uppercase;
+      }
+      #loading-screen .loading-sub {
+        transition: opacity 300ms ease;
+      }
+      #loading-screen .loading-hint {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        color: #7dffa8;
+        text-transform: uppercase;
+        opacity: 0;
+        transition: opacity 400ms ease;
+      }
+      /* The sub and hint occupy the same slot — only one shows at a time. The
+         hint is significantly larger than the sub, so the shared slot height
+         is sized to the hint and the sub centers within it. */
+      #loading-screen .loading-sub,
+      #loading-screen .loading-hint {
+        height: 26px;
+        line-height: 26px;
+      }
+      #loading-screen .loading-hint { margin-top: -26px; }
+      /* Three-state click affordance:
+         - .ready (initial): loading-hint reads "Enter", pulses, cursor pointer.
+         - .entered (mid): first click consumed, hint fades out for ~3s while
+           the loading-screen music plays; cursor disabled.
+         - .armed (final): hint text swapped to "New Game", fades back in,
+           cursor pointer; next click opens the gate / New Game menu. */
+      #loading-screen.ready { cursor: pointer; }
+      #loading-screen.ready .loading-sub { opacity: 0; }
+      #loading-screen.ready .loading-hint {
+        opacity: 1;
+        animation: hint-pulse 1.6s ease-in-out infinite;
+      }
+      #loading-screen.entered { cursor: default; }
+      #loading-screen.entered .loading-hint {
+        opacity: 0;
+        animation: none;
+      }
+      #loading-screen.armed { cursor: pointer; }
+      #loading-screen.armed .loading-sub { opacity: 0; }
+      #loading-screen.armed .loading-hint {
+        opacity: 1;
+        animation: hint-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes hint-pulse {
+        0%, 100% { opacity: 0.55; }
+        50%      { opacity: 1; }
+      }
+      #ui-overlay {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        color: #aab;
+        font-family: var(--hud-font);
+        font-size: 13px;
+        user-select: none;
+        z-index: 10;
+      }
+      .slider-group {
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .slider-group label {
+        width: 100px;
+        text-align: right;
+      }
+      .slider-group input[type="range"] {
+        width: 140px;
+        accent-color: #667;
+      }
+      .slider-group .value {
+        width: 50px;
+        text-align: left;
+      }
+      .slider-group.disabled {
+        opacity: 0.45;
+      }
+      .lp-note {
+        margin-top: 8px;
+        color: #99a3bf;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      #stats {
+        margin-top: 8px;
+        opacity: 0.6;
+        font-size: 11px;
+      }
+      /* Settings modal (centered, with tab strip) */
+      #settings-backdrop {
+        display: none;
+        position: fixed;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(4, 6, 14, 0.55);
+        backdrop-filter: blur(2px);
+        z-index: 49;
+      }
+      #settings-backdrop.active { display: block; }
+      #settings-panel {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 420px;
+        max-width: 560px;
+        max-height: 80vh;
+        padding: 16px 18px;
+        background: rgba(8, 10, 24, 0.96);
+        border: 1px solid rgba(100, 120, 160, 0.45);
+        border-radius: 8px;
+        box-shadow: 0 0 32px 8px rgba(80, 110, 160, 0.2), 0 0 80px 16px rgba(60, 90, 140, 0.1);
+        color: #ccd;
+        font-family: var(--hud-font);
+        z-index: 50;
+        display: none;
+        flex-direction: column;
+      }
+      #settings-panel.active { display: flex; }
+      #settings-panel .st-tabs {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 10px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.25);
+      }
+      #settings-panel .st-tab {
+        padding: 6px 14px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: #889;
+        font-family: inherit;
+        font-size: 12px;
+        letter-spacing: 1px;
+        cursor: pointer;
+      }
+      #settings-panel .st-tab:hover { color: #ccd; }
+      #settings-panel .st-tab.active {
+        color: #eef;
+        border-bottom-color: rgba(140, 170, 220, 0.7);
+      }
+      #settings-panel .st-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+      .lighting-panel,
+      .sun-panel {
+        padding: 4px 2px;
+      }
+      .lighting-panel .lp-section,
+      .sun-panel .lp-section {
+        margin: 6px 0 2px;
+        font-size: 10px;
+        letter-spacing: 1px;
+        color: #889;
+        text-transform: uppercase;
+      }
+      .lighting-panel .lp-row,
+      .sun-panel .lp-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 2px 0;
+      }
+      .lighting-panel .lp-row label,
+      .sun-panel .lp-row label {
+        width: 80px;
+        text-align: right;
+        font-size: 11px;
+        color: #aab;
+      }
+      .lighting-panel .lp-row input[type="range"],
+      .sun-panel .lp-row input[type="range"] {
+        flex: 1;
+        min-width: 0;
+        accent-color: #88a;
+      }
+      .lighting-panel .lp-row input[type="color"] {
+        flex: 1;
+        height: 18px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 3px;
+        background: transparent;
+        padding: 0;
+        cursor: pointer;
+      }
+      .lighting-panel .lp-val,
+      .sun-panel .lp-val {
+        width: 64px;
+        text-align: right;
+        font-size: 10px;
+        color: #ccd;
+        font-variant-numeric: tabular-nums;
+      }
+      #camera-debug {
+        margin-top: 4px;
+        opacity: 0.6;
+        font-size: 11px;
+        font-family: 'Courier New', monospace;
+        white-space: pre;
+        line-height: 1.35;
+      }
+      /* Bottom bar — always visible, 3-zone flex row */
+      #bottom-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 30vh;
+        display: flex;
+        background: rgba(8, 10, 24, 0.88);
+        backdrop-filter: blur(8px);
+        z-index: 20;
+        pointer-events: auto;
+        overflow: visible;
+      }
+      #bottom-bar-left {
+        display: flex;
+        align-items: flex-end;
+        padding-left: 16px;
+        flex-shrink: 0;
+        overflow: visible;
+      }
+      #bottom-bar-center {
+        width: 52vw;
+        display: flex;
+        align-items: stretch;
+        overflow: hidden;
+        margin: 8px 0 8px 24px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        box-shadow: 0 0 24px 8px rgba(80, 110, 160, 0.15), 0 0 60px 16px rgba(60, 90, 140, 0.06);
+      }
+      #preview-grid-container {
+        flex: 3;
+        position: relative;
+        min-width: 0;
+      }
+      #preview-grid-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: pointer;
+      }
+      #focused-info-panel {
+        width: 273px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 8px;
+        overflow-y: auto;
+      }
+      #focused-info-panel .ship-panel {
+        min-width: 0;
+        max-width: none;
+        flex: 1;
+        font-size: 12px;
+      }
+      #command-card {
+        position: fixed;
+        bottom: 30vh;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 5px;
+        padding: 4px 8px;
+        z-index: 21;
+        pointer-events: none;
+      }
+      .cmd-btn {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        background: rgba(12, 16, 30, 0.75);
+        border: 1px solid rgba(100, 120, 160, 0.25);
+        border-radius: 10px;
+        color: #aab;
+        font-size: 10px;
+        font-family: 'Berkeley Mono', 'SF Mono', monospace;
+        cursor: pointer;
+        transition: background 0.12s ease-out, border-color 0.12s ease-out;
+        user-select: none;
+        pointer-events: auto;
+      }
+      .cmd-btn:hover {
+        background: rgba(40, 52, 78, 0.9);
+        border-color: rgba(140, 160, 200, 0.45);
+      }
+      .cmd-btn .cmd-key {
+        font-size: 11px;
+        font-weight: bold;
+        color: #dde;
+      }
+      .cmd-btn .cmd-label {
+        font-size: 9px;
+        line-height: 1.2;
+        color: #889;
+      }
+      /* Active state: see :root --active-* tokens above. cmd-btn paints color on its
+         children so we override those individually. */
+      .cmd-btn.active {
+        background: var(--active-bg);
+        border-color: var(--active-border);
+        box-shadow: var(--active-glow);
+      }
+      .cmd-btn.active .cmd-key   { color: var(--active-text); }
+      .cmd-btn.active .cmd-label { color: var(--active-text-dim); }
+      .cmd-btn.posture-offensive { border-left: 2px solid #f44; }
+      .cmd-btn.posture-defensive { border-left: 2px solid #4af; }
+      /* Armed-state prompt — the canonical "<Verb>: <action> — Esc cancels"
+         line above the chip row. Spans the full width of the card so it
+         visually anchors the mode, then the chips read as its options. */
+      .armed-prompt {
+        flex-basis: 100%;
+        text-align: center;
+        font-family: 'Berkeley Mono', 'SF Mono', monospace;
+        font-size: 11px;
+        line-height: 1.3;
+        padding: 3px 10px;
+        margin-bottom: 2px;
+        color: #cde;
+        background: rgba(36, 52, 92, 0.65);
+        border: 1px solid rgba(120, 160, 220, 0.4);
+        border-radius: 8px;
+        letter-spacing: 0.03em;
+        pointer-events: none;
+      }
+      .armed-prompt .armed-verb {
+        font-weight: bold;
+        color: #fff;
+      }
+      .armed-prompt .armed-action { color: #aac; }
+      .cmd-btn.posture-stealth { border-left: 2px solid #888; }
+
+      /* ── Trajectory Shaping Panel ─────────────────────────── */
+      #planning-panel {
+        position: fixed;
+        top: 56px;
+        right: 16px;
+        width: 320px;
+        background: rgba(8, 12, 24, 0.92);
+        border: 1px solid rgba(80, 100, 160, 0.35);
+        border-radius: 8px;
+        padding: 12px 16px;
+        z-index: 25;
+        font-family: 'Berkeley Mono', 'SF Mono', monospace;
+        color: #ccd;
+        font-size: 11px;
+        display: none;
+        pointer-events: auto;
+      }
+      #planning-panel.active { display: block; }
+      .pp-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(80, 100, 160, 0.25);
+        cursor: move;
+        user-select: none;
+      }
+      .pp-title {
+        font-size: 10px;
+        letter-spacing: 1.5px;
+        color: #66ccff;
+        text-transform: uppercase;
+      }
+      .pp-ship-name {
+        font-size: 10px;
+        color: #889;
+      }
+      .pp-info-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+      }
+      .pp-info-row .pp-label { color: #778; }
+      .pp-info-row .pp-value { color: #bbc; }
+      .pp-slider-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 0;
+      }
+      .pp-slider-label {
+        flex: 0 0 80px;
+        font-size: 10px;
+        color: #889;
+        text-align: right;
+      }
+      .pp-slider-row input[type="range"] {
+        flex: 1;
+        accent-color: #4488cc;
+        height: 4px;
+      }
+      .pp-slider-value {
+        flex: 0 0 60px;
+        font-size: 10px;
+        color: #aab;
+        text-align: left;
+      }
+      .pp-divider {
+        height: 1px;
+        background: rgba(80, 100, 160, 0.2);
+        margin: 8px 0;
+      }
+      /* Multi-ship aggregate summary — sits between the primary-ship info
+         rows and the sliders. Hidden via the [hidden] attribute when N=1. */
+      .pp-group-summary {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin: 4px 0 6px 0;
+        font-size: 10px;
+        flex-wrap: wrap;
+      }
+      .pp-group-summary[hidden] { display: none; }
+      .pp-group-count { color: #aab; }
+      .pp-group-dv { color: #aab; margin-left: auto; }
+      .pp-group-pill {
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 9px;
+        line-height: 1.4;
+      }
+      .pp-pill-green {
+        color: #66ccff;
+        background: rgba(102, 204, 255, 0.12);
+        border: 1px solid rgba(102, 204, 255, 0.32);
+      }
+      .pp-pill-yellow {
+        color: #eed455;
+        background: rgba(238, 212, 85, 0.14);
+        border: 1px solid rgba(238, 212, 85, 0.38);
+      }
+      .pp-pill-red {
+        color: #ee5566;
+        background: rgba(238, 85, 102, 0.14);
+        border: 1px solid rgba(238, 85, 102, 0.38);
+      }
+      .pp-group-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 120px;
+        overflow-y: auto;
+        margin-bottom: 6px;
+        padding: 4px 0;
+        border-top: 1px solid rgba(80, 100, 160, 0.2);
+        border-bottom: 1px solid rgba(80, 100, 160, 0.2);
+      }
+      .pp-group-rows[hidden] { display: none; }
+      .pp-ship-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 9.5px;
+      }
+      .pp-ship-row .pp-ship-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .pp-ship-row.green .pp-ship-dot { background: #66ccff; }
+      .pp-ship-row.yellow .pp-ship-dot { background: #eed455; }
+      .pp-ship-row.red .pp-ship-dot { background: #ee5566; }
+      .pp-ship-row .pp-ship-name-cell {
+        color: #aab;
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pp-ship-row .pp-ship-relax {
+        color: #fb6;
+        font-size: 9px;
+      }
+      .pp-ship-row .pp-ship-dv {
+        color: #889;
+        font-size: 9px;
+      }
+      .pp-status {
+        font-size: 10px;
+        color: #e85050;
+        min-height: 14px;
+        margin: 4px 0;
+      }
+      .pp-buttons {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .pp-btn {
+        padding: 4px 16px;
+        border-radius: 4px;
+        font-family: 'Berkeley Mono', 'SF Mono', monospace;
+        font-size: 10px;
+        cursor: pointer;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        background: rgba(20, 24, 40, 0.8);
+        color: #aab;
+        transition: background 0.12s;
+      }
+      .pp-btn:hover { background: rgba(40, 52, 78, 0.9); }
+      .pp-reset { margin-right: auto; }
+      @keyframes pp-slider-pulse {
+        0% { box-shadow: 0 0 6px 2px rgba(255, 60, 60, 0.7); }
+        100% { box-shadow: none; }
+      }
+      .pp-slider-clamped input[type="range"] {
+        animation: pp-slider-pulse 0.5s ease-out;
+      }
+      #pp-cycle-badge:not([hidden]) {
+        display: inline-block;
+        background: rgba(255, 200, 80, 0.18);
+        border: 1px solid rgba(255, 200, 80, 0.45);
+        color: #fc8;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 9px;
+      }
+      .pp-status.approximate {
+        color: #fb6;
+      }
+      .pp-accept {
+        background: rgba(20, 60, 40, 0.8);
+        border-color: rgba(40, 160, 80, 0.4);
+        color: #6d6;
+      }
+      .pp-accept:hover { background: rgba(30, 80, 50, 0.9); }
+      .pp-accept:disabled {
+        opacity: 0.4;
+        cursor: default;
+        background: rgba(20, 24, 40, 0.8);
+        border-color: rgba(100, 120, 160, 0.2);
+        color: #667;
+      }
+
+      #game-controls {
+        flex: 0 0 170px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        margin: 8px 4px 8px 4px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        box-shadow: 0 0 24px 8px rgba(80, 110, 160, 0.15), 0 0 60px 16px rgba(60, 90, 140, 0.06);
+        background: rgba(8, 10, 24, 0.88);
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+      .gc-title {
+        font-size: 12px;
+        letter-spacing: 2px;
+        color: #aab;
+        padding-bottom: 4px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+      }
+      .game-btn {
+        width: 100%;
+        padding: 8px 10px;
+        background: rgba(20, 26, 42, 0.9);
+        border: 1px solid rgba(100, 120, 160, 0.4);
+        border-radius: 4px;
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        letter-spacing: 1px;
+        cursor: pointer;
+        text-align: center;
+        transition: background 0.12s ease-out, border-color 0.12s ease-out;
+      }
+      .game-btn:hover {
+        background: rgba(40, 52, 78, 0.95);
+        border-color: rgba(140, 170, 220, 0.55);
+      }
+      .game-btn:active {
+        background: rgba(60, 72, 100, 0.95);
+      }
+      .game-btn.paused {
+        background: var(--active-bg);
+        border-color: var(--active-border);
+        color: var(--active-text);
+        box-shadow: var(--active-glow);
+      }
+      .game-btn.paused:hover {
+        background: var(--active-bg-hover);
+        border-color: var(--active-border-hover);
+        box-shadow: var(--active-glow-hover);
+      }
+      #bottom-bar-right {
+        flex: 1;
+        min-width: 0;
+        margin: 8px 12px 8px 4px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        box-shadow: 0 0 24px 8px rgba(80, 110, 160, 0.15), 0 0 60px 16px rgba(60, 90, 140, 0.06);
+      }
+      /* Settings panel keeps its existing modal language. The scenarios panel
+         has been moved to the brass-shell aesthetic (shared with new-game,
+         missions, and the mission dialog) — see further below. */
+      #settings-panel .sp-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.25);
+      }
+      #settings-panel h3 {
+        font-size: 14px;
+        letter-spacing: 2px;
+        color: #ccd;
+        font-weight: normal;
+      }
+      #settings-panel .sp-close,
+      .sp-popout .sp-close {
+        background: transparent;
+        border: none;
+        color: #889;
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 2px 8px;
+      }
+      #settings-panel .sp-close:hover,
+      .sp-popout .sp-close:hover { color: #ccd; }
+      #settings-panel .sp-popout-btn {
+        background: transparent;
+        border: 1px solid rgba(140, 170, 220, 0.35);
+        color: #aab;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 3px 9px;
+        margin-right: 6px;
+        margin-left: auto;
+        border-radius: 3px;
+      }
+      #settings-panel .sp-popout-btn:hover {
+        color: #eef;
+        border-color: rgba(140, 170, 220, 0.7);
+      }
+      /* Floating popout: same look as the modal, but no backdrop, no centering,
+         dockable in the upper-right so the scene is visible while tuning. */
+      .sp-popout {
+        position: fixed;
+        top: 60px;
+        right: 16px;
+        width: 360px;
+        max-height: calc(100vh - 80px);
+        padding: 12px 14px;
+        background: rgba(8, 10, 24, 0.96);
+        border: 1px solid rgba(100, 120, 160, 0.45);
+        border-radius: 8px;
+        box-shadow: 0 0 32px 8px rgba(80, 110, 160, 0.2), 0 0 80px 16px rgba(60, 90, 140, 0.1);
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        z-index: 48;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .sp-popout-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 8px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.25);
+        font-size: 13px;
+        letter-spacing: 1.5px;
+        color: #ccd;
+      }
+      .sp-popout > .st-tab-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      /* New-game / missions / scenarios / mission-dialog: brass-shell aesthetic shared
+         with the overlay legend. Uses the same --legend-* tokens, layered
+         gradient + radial top glow, diagonal ::before sheen, and Orbitron
+         HUD typography so the menus read as part of the overlay system. */
+      #scenarios-backdrop,
+      #missions-backdrop,
+      #new-game-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(4, 6, 14, 0.55);
+        backdrop-filter: blur(2px);
+        z-index: 10000;
+      }
+      #scenarios-backdrop.active,
+      #missions-backdrop.active,
+      #new-game-backdrop.active { display: block; }
+      #scenarios-panel,
+      #missions-panel,
+      #new-game-panel {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 460px;
+        max-width: 580px;
+        max-height: 72vh;
+        padding: 18px 20px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        background:
+          linear-gradient(180deg, var(--legend-panel-top), var(--legend-panel-bottom)),
+          radial-gradient(circle at top, rgba(255, 221, 148, 0.08), transparent 42%);
+        border: 1px solid var(--legend-frame);
+        border-radius: 14px;
+        box-shadow: var(--legend-shadow);
+        backdrop-filter: blur(10px);
+        overflow: hidden;
+        z-index: 10001;
+      }
+      #scenarios-panel.active,
+      #missions-panel.active,
+      #new-game-panel.active { display: block; }
+      /* Diagonal sheen — same recipe as .overlay-legend-shell::before. */
+      #scenarios-panel::before,
+      #missions-panel::before,
+      #new-game-panel::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(125deg, rgba(255, 228, 168, 0.1), transparent 30%),
+          repeating-linear-gradient(
+            115deg,
+            rgba(255, 255, 255, 0.02) 0,
+            rgba(255, 255, 255, 0.02) 2px,
+            transparent 2px,
+            transparent 9px
+          );
+        opacity: 0.7;
+        pointer-events: none;
+        z-index: 0;
+      }
+      #scenarios-panel > *,
+      #missions-panel > *,
+      #new-game-panel > * {
+        position: relative;
+        z-index: 1;
+      }
+      #scenarios-panel .sp-header,
+      #missions-panel .sp-header,
+      #new-game-panel .sp-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding-bottom: 12px;
+        margin-bottom: 14px;
+        border-bottom: 1px solid rgba(214, 178, 103, 0.22);
+      }
+      #scenarios-panel h3,
+      #missions-panel h3,
+      #new-game-panel h3 {
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--legend-text);
+        margin: 0;
+      }
+      /* Pill-shaped chrome buttons that match .overlay-legend-hotkey. */
+      #missions-panel .sp-back,
+      #missions-panel .sp-close,
+      #scenarios-panel .sp-close {
+        min-width: 28px;
+        padding: 4px 10px 5px;
+        border-radius: 999px;
+        border: 1px solid rgba(214, 178, 103, 0.5);
+        background: rgba(38, 28, 13, 0.78);
+        color: var(--legend-frame-bright);
+        font-family: var(--hud-font);
+        font-size: 13px;
+        line-height: 1;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        box-shadow: inset 0 0 0 1px rgba(255, 239, 192, 0.05);
+        transition: color 0.15s ease-out, border-color 0.15s ease-out, background 0.15s ease-out;
+      }
+      #missions-panel .sp-back:hover,
+      #missions-panel .sp-close:hover,
+      #scenarios-panel .sp-close:hover {
+        color: #fff5d8;
+        border-color: rgba(236, 205, 132, 0.85);
+        background: rgba(58, 42, 18, 0.88);
+      }
+      #scenarios-panel .sp-list,
+      #missions-panel .sp-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: calc(72vh - 90px);
+        overflow-y: auto;
+      }
+      #scenarios-panel .sp-row,
+      #missions-panel .sp-row,
+      #new-game-panel .ng-card {
+        position: relative;
+        text-align: left;
+        padding: 14px 16px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        background:
+          linear-gradient(180deg, rgba(28, 38, 64, 0.78), rgba(10, 14, 30, 0.82)),
+          radial-gradient(circle at top, rgba(255, 221, 148, 0.06), transparent 60%);
+        border: 1px solid rgba(214, 178, 103, 0.32);
+        border-radius: 10px;
+        cursor: pointer;
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 239, 192, 0.04),
+          0 6px 14px rgba(0, 0, 0, 0.32);
+        transition: border-color 0.15s ease-out, transform 0.15s ease-out, box-shadow 0.15s ease-out;
+      }
+      #scenarios-panel .sp-row:hover,
+      #missions-panel .sp-row:hover,
+      #new-game-panel .ng-card:hover {
+        border-color: rgba(236, 205, 132, 0.7);
+        transform: translateY(-1px);
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 239, 192, 0.08),
+          0 10px 22px rgba(0, 0, 0, 0.42),
+          0 0 18px rgba(214, 178, 103, 0.18);
+      }
+      #scenarios-panel .sp-row-label,
+      #missions-panel .sp-row-label,
+      #new-game-panel .ng-card-label {
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--legend-frame-bright);
+        margin-bottom: 4px;
+      }
+      #scenarios-panel .sp-row-desc,
+      #missions-panel .sp-row-desc,
+      #new-game-panel .ng-card-desc {
+        font-size: 11px;
+        line-height: 1.55;
+        letter-spacing: 0.02em;
+        color: var(--legend-text-dim);
+      }
+
+      /* New-game two-card picker. */
+      #new-game-panel .ng-cards {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      #new-game-panel .ng-card-label {
+        font-size: 15px;
+      }
+
+      /* Mission dialog overlay (narrator + checkpoint dialogue) — slim
+         brass-shell variant of the legend, top-centered like #overlay-banner. */
+      #mission-dialog {
+        display: none;
+        position: fixed;
+        left: 50%;
+        top: 24px;
+        transform: translateX(-50%);
+        min-width: 460px;
+        max-width: 640px;
+        padding: 14px 18px 12px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        background:
+          linear-gradient(180deg, var(--legend-panel-top), var(--legend-panel-bottom)),
+          radial-gradient(circle at top, rgba(255, 221, 148, 0.08), transparent 42%);
+        border: 1px solid var(--legend-frame);
+        border-radius: 14px;
+        box-shadow: var(--legend-shadow);
+        backdrop-filter: blur(10px);
+        overflow: hidden;
+        z-index: 9500;
+        pointer-events: none;
+      }
+      #mission-dialog::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(125deg, rgba(255, 228, 168, 0.1), transparent 30%),
+          repeating-linear-gradient(
+            115deg,
+            rgba(255, 255, 255, 0.02) 0,
+            rgba(255, 255, 255, 0.02) 2px,
+            transparent 2px,
+            transparent 9px
+          );
+        opacity: 0.7;
+        pointer-events: none;
+        z-index: 0;
+      }
+      #mission-dialog > * {
+        position: relative;
+        z-index: 1;
+      }
+      #mission-dialog.active {
+        display: block;
+        animation: md-checkpoint-fade 1200ms ease-out both;
+      }
+      #mission-dialog .md-speaker {
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--legend-frame-bright);
+        margin-bottom: 8px;
+      }
+      #mission-dialog .md-lines {
+        font-size: 13px;
+        line-height: 1.55;
+        letter-spacing: 0.02em;
+        color: var(--legend-text);
+      }
+      #mission-dialog .md-line {
+        margin-bottom: 4px;
+        animation: md-line-fade 320ms ease-out;
+      }
+      #mission-dialog .md-footer {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(214, 178, 103, 0.22);
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--legend-text-muted);
+      }
+      @keyframes md-line-fade {
+        from { opacity: 0; transform: translateY(-2px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes md-checkpoint-fade {
+        from { opacity: 0; transform: translate(-50%, -4px); }
+        to { opacity: 1; transform: translate(-50%, 0); }
+      }
+
+      /* Faction strength debug panel (bottom-right) */
+      .fs-panel {
+        display: flex;
+        flex-direction: column;
+        padding: 10px 12px;
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        background: rgba(8, 10, 24, 0.88);
+        backdrop-filter: blur(8px);
+        border-radius: 5px;
+        gap: 4px;
+        overflow: hidden;
+        height: 100%;
+        box-sizing: border-box;
+      }
+      .fs-title {
+        font-size: 12px;
+        letter-spacing: 2px;
+        color: #aab;
+        margin-bottom: 4px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+      }
+      .fs-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 16px;
+      }
+      .fs-row.fs-master {
+        min-height: 24px;
+        margin-bottom: 4px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+      }
+      .fs-label {
+        width: 72px;
+        flex-shrink: 0;
+        color: #889;
+        font-size: 10px;
+      }
+      .fs-master .fs-label {
+        color: #ccd;
+        font-size: 11px;
+        font-weight: bold;
+      }
+      .fs-bar {
+        flex: 1;
+        display: flex;
+        height: 14px;
+        border-radius: 3px;
+        overflow: hidden;
+        background: rgba(40, 42, 56, 0.6);
+      }
+      .fs-master .fs-bar { height: 20px; }
+      .fs-seg {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: flex-grow 0.25s ease-out;
+        overflow: hidden;
+        min-width: 0;
+      }
+      .fs-mars {
+        background: linear-gradient(to right, rgba(255, 120, 60, 0.85), rgba(220, 90, 40, 0.95));
+        color: #ffe0c4;
+      }
+      .fs-earth {
+        background: linear-gradient(to right, rgba(60, 140, 220, 0.9), rgba(100, 180, 255, 0.85));
+        color: #dfeeff;
+        text-align: right;
+      }
+      .fs-val {
+        font-size: 9px;
+        padding: 0 4px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .fs-master .fs-val { font-size: 11px; font-weight: bold; }
+      /* Economy section sits above the strength bars in the same panel. */
+      .fs-econ {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+      }
+      .fs-econ.earth .fs-econ-title,
+      .fs-econ.earth .fs-econ-icon { color: #5bf; }
+      .fs-econ.mars .fs-econ-title,
+      .fs-econ.mars .fs-econ-icon { color: #f84; }
+      .fs-econ-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 1px 0;
+        font-size: 11px;
+        min-height: 14px;
+      }
+      .fs-econ-label { color: #889; }
+      .fs-econ-icon { color: #889; margin-right: 6px; }
+      .fs-econ-value {
+        color: #eef;
+        font-variant-numeric: tabular-nums;
+      }
+      .ship-panel {
+        display: none;
+        pointer-events: auto;
+        background: rgba(8, 10, 24, 0.88);
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        padding: 12px 16px;
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        font-size: 13px;
+        backdrop-filter: blur(8px);
+        user-select: none;
+        overflow: hidden;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .ship-panel-body {
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+      }
+      .ship-panel.mars-bound,
+      .ship-panel.mars-selected {
+        background: rgba(24, 12, 8, 0.88);
+        border-color: rgba(180, 100, 60, 0.35);
+      }
+      .ship-panel.mars-bound .ship-panel-name,
+      .ship-panel.mars-selected .ship-panel-name { color: #f0c8a0; }
+      .ship-panel.mars-bound .ship-panel-header,
+      .ship-panel.mars-selected .ship-panel-header { border-bottom-color: rgba(180, 100, 60, 0.25); }
+      .ship-panel.mars-bound .sdp-label,
+      .ship-panel.mars-selected .sdp-label { color: #997866; }
+      .ship-panel.sun-selected {
+        background: rgba(28, 22, 8, 0.88);
+        border-color: rgba(200, 170, 60, 0.35);
+      }
+      .ship-panel.sun-selected .ship-panel-name { color: #ffe88a; }
+      .ship-panel.sun-selected .ship-panel-header { border-bottom-color: rgba(200, 170, 60, 0.25); }
+      .ship-panel.sun-selected .sdp-label { color: #99884d; }
+      .ship-panel.venus-selected {
+        background: rgba(28, 24, 10, 0.88);
+        border-color: rgba(200, 170, 60, 0.35);
+      }
+      .ship-panel.venus-selected .ship-panel-name { color: #f0d870; }
+      .ship-panel.venus-selected .ship-panel-header { border-bottom-color: rgba(200, 170, 60, 0.25); }
+      .ship-panel.venus-selected .sdp-label { color: #998850; }
+      .ship-panel.mercury-selected {
+        background: rgba(20, 20, 22, 0.88);
+        border-color: rgba(150, 150, 165, 0.35);
+      }
+      .ship-panel.mercury-selected .ship-panel-name { color: #c8c8d4; }
+      .ship-panel.mercury-selected .ship-panel-header { border-bottom-color: rgba(150, 150, 165, 0.25); }
+      .ship-panel.mercury-selected .sdp-label { color: #777788; }
+      .ship-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+        padding-bottom: 6px;
+      }
+      .ship-panel-name {
+        font-size: 15px;
+        font-weight: bold;
+        color: #eef;
+        letter-spacing: 1px;
+      }
+      .ship-panel-name-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+      }
+      .ship-panel-batteries {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 2px;
+        align-items: center;
+        margin-left: auto;
+      }
+      .ship-panel-batteries:empty { display: none; }
+      .ship-panel-batteries .battery-cell {
+        width: 7px;
+        height: 14px;
+        gap: 0;
+        padding: 0px 1px;
+      }
+      .ship-panel-batteries .battery-gap {
+        width: 4px;
+      }
+      .ship-panel-batteries .cc-cell {
+        width: 10px;
+        height: 14px;
+      }
+      .ship-panel-title {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+        flex: 1;
+      }
+      .ship-panel-kind {
+        display: flex;
+        align-items: center;
+        font-size: 11px;
+        color: #889;
+        letter-spacing: 0.5px;
+      }
+      .ship-panel-kind:empty { display: none; }
+      .ship-panel-posture {
+        margin-left: auto;
+        font-size: 10px;
+        letter-spacing: 1px;
+      }
+      .ship-panel.mars-bound .ship-panel-kind,
+      .ship-panel.mars-selected .ship-panel-kind { color: #b8907a; }
+      .ship-panel-header {
+        pointer-events: none;
+      }
+      .ship-panel-close {
+        cursor: pointer;
+        color: #667;
+        font-size: 16px;
+        line-height: 1;
+        padding: 2px 6px;
+        pointer-events: auto;
+      }
+      .ship-panel-close:hover { color: #aab; }
+      .overflow-badge {
+        align-self: center;
+        pointer-events: auto;
+        color: #889;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        padding: 8px 12px;
+        background: rgba(8, 10, 24, 0.7);
+        border: 1px solid rgba(100, 120, 160, 0.2);
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .sdp-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 2px 0;
+      }
+      .sdp-label {
+        color: #778;
+        margin-right: 16px;
+      }
+
+      /* Fuel bar */
+      .fuel-bar-container {
+        padding: 4px 0 2px;
+      }
+      .fuel-bar-label {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+      .fuel-bar-label .sdp-label { margin-right: 0; }
+      .fuel-bar {
+        display: flex;
+        height: 6px;
+        border-radius: 3px;
+        overflow: hidden;
+        background: rgba(255,255,255,0.06);
+      }
+      .fuel-bar-reserve {
+        background: #5bf;
+        border-radius: 3px 0 0 3px;
+      }
+      .fuel-bar-transit {
+        background: rgba(90,180,255,0.35);
+      }
+      .fuel-bar-used {
+        background: rgba(90,180,255,0.12);
+        border-radius: 0 3px 3px 0;
+      }
+      .fuel-bar-numbers {
+        font-size: 10px;
+        color: #667;
+        margin-top: 2px;
+      }
+      /* Mars-origin fuel bar colors */
+      .mars-bound .fuel-bar-reserve { background: #f84; }
+      .mars-bound .fuel-bar-transit { background: rgba(255,136,68,0.35); }
+      .mars-bound .fuel-bar-used { background: rgba(255,136,68,0.12); }
+
+      /* Routing hints */
+      .routing-hint {
+        color: #4e8;
+        font-size: 11px;
+        justify-content: center;
+        padding-top: 6px;
+      }
+      .routing-hint-dim {
+        color: #556;
+        font-size: 10px;
+        justify-content: center;
+        padding-top: 4px;
+      }
+      #debug-snapshot {
+        position: fixed;
+        top: 16px;
+        right: 96px;
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        background: rgba(8, 10, 24, 0.7);
+        color: #aab;
+        font-size: 16px;
+        cursor: pointer;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+        backdrop-filter: blur(8px);
+      }
+      #debug-snapshot:hover { color: #eef; border-color: rgba(100, 120, 160, 0.5); }
+      #debug-snapshot.copied { color: #4e8; border-color: rgba(80, 230, 130, 0.5); }
+      #bug-counter {
+        position: fixed;
+        top: 24px;
+        right: 368px;
+        color: #f66;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        z-index: 10;
+        user-select: none;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #bug-counter .bc-gap { color: #f33; font-weight: bold; }
+      #driver-select {
+        position: fixed;
+        top: 16px;
+        right: 136px;
+        height: 32px;
+        padding: 0 24px 0 8px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        background: rgba(8, 10, 24, 0.7);
+        color: #aab;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        cursor: pointer;
+        z-index: 10;
+        user-select: none;
+        backdrop-filter: blur(8px);
+        /* Keep a consistent width whether enabled or disabled. */
+        min-width: 120px;
+        -webkit-appearance: none;
+        appearance: none;
+        /* Custom caret. */
+        background-image: linear-gradient(45deg, transparent 50%, #aab 50%),
+                          linear-gradient(135deg, #aab 50%, transparent 50%);
+        background-position: calc(100% - 12px) 14px, calc(100% - 8px) 14px;
+        background-size: 4px 4px, 4px 4px;
+        background-repeat: no-repeat;
+      }
+      #driver-select:hover:not(:disabled) { color: #eef; border-color: rgba(100, 120, 160, 0.5); }
+      #driver-select:disabled { color: #556; cursor: not-allowed; opacity: 0.5; }
+      #driver-select.chaos { color: #f93; border-color: rgba(255, 160, 60, 0.5); }
+      #god-mode-toggle {
+        position: fixed;
+        top: 16px;
+        right: 280px;
+        height: 32px;
+        padding: 0 12px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        background: rgba(8, 10, 24, 0.7);
+        color: #aab;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        cursor: pointer;
+        z-index: 10;
+        user-select: none;
+        backdrop-filter: blur(8px);
+      }
+      #god-mode-toggle:hover { color: #eef; border-color: rgba(100, 120, 160, 0.5); }
+      #god-mode-toggle.active { color: #0f8; border-color: rgba(0, 255, 136, 0.4); }
+      #copy-logs {
+        position: fixed;
+        top: 16px;
+        right: 56px;
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        background: rgba(8, 10, 24, 0.7);
+        color: #aab;
+        font-size: 16px;
+        cursor: pointer;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+        backdrop-filter: blur(8px);
+      }
+      #copy-logs:hover { color: #eef; border-color: rgba(100, 120, 160, 0.5); }
+      #copy-logs.copied { color: #4e8; border-color: rgba(80, 230, 130, 0.5); }
+      #music-controls {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        flex-direction: row;
+        gap: 6px;
+        z-index: 10;
+      }
+      #music-skip, #music-toggle {
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 6px;
+        background: rgba(8, 10, 24, 0.7);
+        color: #aab;
+        font-size: 18px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+        backdrop-filter: blur(8px);
+        flex-shrink: 0;
+      }
+      #music-skip:hover, #music-toggle:hover { color: #eef; border-color: rgba(100, 120, 160, 0.5); }
+      #music-toggle.muted { color: #556; }
+      .routing-hint-dim b {
+        color: #889;
+        background: rgba(255,255,255,0.06);
+        padding: 0 4px;
+        border-radius: 2px;
+        font-weight: normal;
+      }
+      .retro-label {
+        color: #f80;
+        background: rgba(255, 136, 0, 0.15);
+        padding: 0 4px;
+        border-radius: 2px;
+      }
+      /* Build mode panel */
+      #build-panel {
+        display: none;
+        position: fixed;
+        top: 50%;
+        right: 24px;
+        transform: translateY(-50%);
+        background: rgba(8, 10, 24, 0.92);
+        border: 1px solid rgba(100, 120, 160, 0.35);
+        border-radius: 8px;
+        padding: 16px 20px;
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        font-size: 13px;
+        z-index: 25;
+        backdrop-filter: blur(8px);
+        user-select: none;
+        min-width: 220px;
+        pointer-events: none;
+      }
+      #build-panel.active { display: block; }
+      #build-panel.earth-build { border-color: rgba(68, 136, 204, 0.5); }
+      #build-panel.mars-build {
+        border-color: rgba(204, 102, 51, 0.5);
+        background: rgba(20, 12, 8, 0.92);
+      }
+      .build-title {
+        font-size: 14px;
+        font-weight: bold;
+        color: #eef;
+        letter-spacing: 1px;
+        margin-bottom: 10px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(100, 120, 160, 0.2);
+      }
+      .mars-build .build-title { color: #f0c8a0; border-bottom-color: rgba(180, 100, 60, 0.25); }
+      .build-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 0;
+        color: #889;
+      }
+      .build-option.available { color: #ccd; }
+      .build-option.selected { color: #6e8; }
+      .mars-build .build-option.selected { color: #fa6; }
+      .build-option-cost {
+        margin-left: auto;
+        color: #889;
+        font-size: 11px;
+      }
+      .build-option-key {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 3px;
+        padding: 1px 8px;
+        font-size: 12px;
+        min-width: 24px;
+        text-align: center;
+        color: #eef;
+      }
+      .build-option.selected .build-option-key {
+        background: rgba(100, 230, 130, 0.15);
+        border-color: rgba(100, 230, 130, 0.3);
+      }
+      .mars-build .build-option.selected .build-option-key {
+        background: rgba(255, 170, 100, 0.15);
+        border-color: rgba(255, 170, 100, 0.3);
+      }
+      .build-hint {
+        font-size: 11px;
+        color: #556;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(100, 120, 160, 0.15);
+      }
+      .build-hint b {
+        color: #889;
+        background: rgba(255,255,255,0.06);
+        padding: 0 4px;
+        border-radius: 2px;
+        font-weight: normal;
+      }
+      #overlay-banner {
+        display: none;
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 5px 12px 6px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        font-size: 11px;
+        letter-spacing: 0.11em;
+        text-align: center;
+        text-transform: uppercase;
+        white-space: nowrap;
+        line-height: 1.3;
+        z-index: 10;
+        user-select: none;
+        pointer-events: none;
+        border: 1px solid rgba(214, 178, 103, 0.45);
+        border-radius: 999px;
+        background:
+          linear-gradient(180deg, rgba(46, 36, 18, 0.92), rgba(20, 15, 8, 0.92)),
+          radial-gradient(circle at 50% 0%, rgba(255, 232, 174, 0.22), transparent 70%);
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 232, 174, 0.08),
+          0 0 18px rgba(214, 178, 103, 0.16);
+      }
+      #overlay-legend {
+        position: fixed;
+        top: 68px;
+        right: 16px;
+        z-index: 10;
+        width: 340px;
+        user-select: none;
+        pointer-events: none;
+      }
+      .overlay-legend-shell {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px 15px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        background:
+          linear-gradient(180deg, var(--legend-panel-top), var(--legend-panel-bottom)),
+          radial-gradient(circle at top, rgba(255, 221, 148, 0.08), transparent 42%);
+        border: 1px solid var(--legend-frame);
+        border-radius: 14px;
+        box-shadow: var(--legend-shadow);
+        overflow: hidden;
+        backdrop-filter: blur(10px);
+      }
+      .overlay-legend-shell::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(125deg, rgba(255, 228, 168, 0.1), transparent 30%),
+          repeating-linear-gradient(
+            115deg,
+            rgba(255, 255, 255, 0.02) 0,
+            rgba(255, 255, 255, 0.02) 2px,
+            transparent 2px,
+            transparent 9px
+          );
+        opacity: 0.7;
+        pointer-events: none;
+      }
+      .overlay-legend-shell > * {
+        position: relative;
+        z-index: 1;
+      }
+      .overlay-legend-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .overlay-legend-title {
+        color: var(--legend-text);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .overlay-legend-hotkey {
+        min-width: 24px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(214, 178, 103, 0.5);
+        color: var(--legend-frame-bright);
+        background: rgba(38, 28, 13, 0.78);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-align: center;
+        box-shadow: inset 0 0 0 1px rgba(255, 239, 192, 0.05);
+      }
+      .overlay-legend-subtitle {
+        color: var(--legend-text-dim);
+        font-size: 11px;
+        letter-spacing: 0.03em;
+        line-height: 1.55;
+      }
+      .overlay-legend-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .overlay-legend-scalar,
+      .overlay-legend-hybrid {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .overlay-legend-ramp {
+        height: 16px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 236, 196, 0.16);
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+          0 0 0 1px rgba(12, 18, 32, 0.45);
+      }
+      .overlay-legend-ramp-labels {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: start;
+        gap: 12px;
+        color: var(--legend-text-dim);
+        font-size: 10px;
+        line-height: 1.55;
+        text-transform: uppercase;
+      }
+      .overlay-legend-ramp-edge:last-child {
+        text-align: right;
+      }
+      .overlay-legend-ramp-center {
+        color: var(--legend-text-muted);
+        text-align: center;
+      }
+      .overlay-legend-key {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 14px;
+      }
+      .overlay-legend-key-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .overlay-legend-swatch {
+        width: 11px;
+        height: 11px;
+        flex: 0 0 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 0 8px rgba(255, 255, 255, 0.08);
+      }
+      .overlay-legend-key-label {
+        min-width: 0;
+        color: var(--legend-text-dim);
+        font-size: 10px;
+        line-height: 1.5;
+        text-transform: uppercase;
+      }
+      .overlay-legend-section-title {
+        padding-top: 4px;
+        border-top: 1px solid rgba(214, 178, 103, 0.18);
+        color: var(--legend-text-muted);
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .overlay-legend-bivariate {
+        display: flex;
+        justify-content: center;
+      }
+      .overlay-legend-bivariate-frame {
+        position: relative;
+        width: 224px;
+        height: 188px;
+      }
+      .overlay-legend-bivariate-canvas {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        width: 160px;
+        height: 160px;
+        transform: translateX(-50%);
+      }
+      .overlay-legend-corner,
+      .overlay-legend-axis {
+        position: absolute;
+        color: var(--legend-text-dim);
+        font-size: 9px;
+        line-height: 1.45;
+        text-transform: uppercase;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      }
+      .overlay-legend-corner.top-left { top: 0; left: 0; width: 92px; }
+      .overlay-legend-corner.top-right { top: 0; right: 0; width: 92px; text-align: right; }
+      .overlay-legend-corner.bottom-left { bottom: 0; left: 0; width: 92px; }
+      .overlay-legend-corner.bottom-right { bottom: 0; right: 0; width: 92px; text-align: right; }
+      .overlay-legend-axis.x-neg { left: 12px; bottom: 76px; }
+      .overlay-legend-axis.x-pos { right: 12px; bottom: 76px; text-align: right; }
+      .overlay-legend-axis.y-neg { top: 20px; left: 50%; transform: translateX(-50%); }
+      .overlay-legend-axis.y-pos { bottom: 14px; left: 50%; transform: translateX(-50%); }
+      .overlay-legend-footer {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(214, 178, 103, 0.12);
+      }
+      .overlay-legend-note {
+        color: var(--legend-text-muted);
+        font-size: 10px;
+        line-height: 1.55;
+      }
+      @media (max-width: 900px) {
+        #overlay-legend {
+          width: 286px;
+          top: 60px;
+          right: 12px;
+        }
+        .overlay-legend-shell {
+          padding: 12px;
+          gap: 10px;
+        }
+        .overlay-legend-title {
+          font-size: 12px;
+        }
+        .overlay-legend-key {
+          grid-template-columns: 1fr;
+        }
+        .overlay-legend-bivariate-frame {
+          width: 204px;
+          height: 176px;
+        }
+        .overlay-legend-bivariate-canvas {
+          width: 144px;
+          height: 144px;
+        }
+      }
+      /* Unified HUD typography */
+      #loading-screen,
+      #ui-overlay,
+      #settings-panel,
+      #camera-debug,
+      .cmd-btn,
+      #planning-panel,
+      .pp-btn,
+      #game-controls,
+      .game-btn,
+      #scenarios-panel,
+      #scenarios-panel .sp-row,
+      .fs-panel,
+      .ship-panel,
+      .overflow-badge,
+      #perf-overlay,
+      #hotkey-panel,
+      #overlay-banner,
+      .overlay-legend-shell {
+        font-family: var(--hud-font);
+      }
+      #ui-overlay,
+      #settings-panel,
+      #camera-debug,
+      .cmd-btn,
+      #planning-panel,
+      .pp-btn,
+      #game-controls,
+      .game-btn,
+      #scenarios-panel .sp-row,
+      .fs-panel,
+      .ship-panel,
+      .overflow-badge,
+      #perf-overlay,
+      #hotkey-panel,
+      #overlay-banner,
+      .overlay-legend-shell {
+        letter-spacing: var(--hud-letter-spacing);
+      }
+      .gc-title,
+      .fs-title,
+      #overlay-banner,
+      .overlay-legend-title,
+      .overlay-legend-hotkey,
+      .overlay-legend-section-title,
+      #hotkey-panel h3 {
+        letter-spacing: var(--hud-letter-spacing-wide);
+      }
+      #perf-overlay {
+        display: none;
+        position: fixed;
+        top: 100px;
+        left: 16px;
+        color: #8f8;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        background: rgba(0, 8, 0, 0.75);
+        padding: 8px 12px;
+        border: 1px solid rgba(80, 200, 80, 0.3);
+        border-radius: 4px;
+        z-index: 30;
+        user-select: none;
+        pointer-events: none;
+        white-space: pre;
+        line-height: 1.4;
+      }
+      #hotkey-panel {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(8, 10, 24, 0.92);
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        border-radius: 8px;
+        padding: 20px 28px;
+        color: #ccd;
+        font-family: 'Courier New', monospace;
+        font-size: 13px;
+        z-index: 30;
+        backdrop-filter: blur(8px);
+        user-select: none;
+        min-width: 240px;
+      }
+      #hotkey-panel h3 {
+        margin: 0 0 12px;
+        color: #eef;
+        font-size: 14px;
+        letter-spacing: 1px;
+      }
+      .hotkey-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 0;
+        gap: 24px;
+      }
+      .hotkey-key {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 3px;
+        padding: 1px 8px;
+        color: #eef;
+        font-size: 12px;
+        min-width: 24px;
+        text-align: center;
+      }
+      .hotkey-desc {
+        color: #889;
+        font-size: 12px;
+      }
+      /* Minimap */
+      #minimap-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        padding-bottom: 8px;
+      }
+      #minimap-view-btns {
+        display: flex;
+        gap: 4px;
+      }
+      .minimap-view-btn {
+        background: rgba(20, 25, 50, 0.80);
+        border: 1px solid rgba(100, 130, 200, 0.35);
+        color: rgba(160, 185, 240, 0.80);
+        font-size: 10px;
+        font-family: var(--hud-font);
+        letter-spacing: 0.06em;
+        padding: 3px 8px;
+        border-radius: 3px;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      .minimap-view-btn:hover {
+        background: rgba(40, 55, 100, 0.90);
+        color: rgba(200, 220, 255, 1);
+        border-color: rgba(130, 160, 240, 0.60);
+      }
+      .minimap-view-btn.matched {
+        background: var(--active-bg);
+        color: var(--active-text);
+        border-color: var(--active-border);
+        box-shadow: var(--active-glow);
+      }
+      #minimap-container {
+        width: calc(30vh - 24px);
+        height: calc(30vh - 24px);
+        border-radius: 50%;
+        overflow: hidden;
+        background: rgba(8, 10, 24, 0.88);
+        border: 1px solid rgba(100, 120, 160, 0.3);
+        box-shadow: 0 0 24px 8px rgba(80, 110, 160, 0.25), 0 0 60px 16px rgba(60, 90, 140, 0.1);
+        user-select: none;
+        cursor: crosshair;
+        flex-shrink: 0;
+        align-self: flex-end;
+      }
+      #minimap-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      /* Battery indicators */
+      /* Visual separator between defensive (white) and offensive (yellow) groups. */
+      .battery-gap {
+        width: 8px;
+      }
+      .battery-cell {
+        width: 10px;
+        height: 20px;
+        border: 1px solid #888;
+        display: flex;
+        flex-direction: column-reverse;
+        gap: 1px;
+        padding: 1px;
+        box-sizing: border-box;
+      }
+      .battery-cell.destroyed {
+        border-color: #444;
+        background: #222;
+      }
+      .missile-slot {
+        flex: 1 1 0;
+        background: transparent;
+        border: 1px solid transparent;
+        box-sizing: border-box;
+      }
+      .missile-slot.loaded { background: #fff; }
+      .missile-slot.empty { background: transparent; border-color: #555; }
+      .missile-slot.reloading { background: #fff; }
+      /* Per-missile-class colors. Guardian = white (default above);
+         Javelin = orange. Applies to both defensive and offensive battery
+         rows so a planet's defensive (Javelin) row and a station's
+         offensive (Javelin) row read the same; stations also carry a
+         defensive (Guardian) row in white. */
+      .battery-cell.javelin { border-color: #ff9933; }
+      .battery-cell.javelin.destroyed { border-color: #553311; background: #221100; }
+      .battery-cell.javelin .missile-slot.loaded { background: #ff9933; }
+      .battery-cell.javelin .missile-slot.reloading { background: #ff9933; }
+      .battery-cell.javelin .missile-slot.empty { border-color: #553311; }
+      /* Legacy alias kept so old `.offensive` callers don't go un-styled
+         during the missile-kind plumb-through. Renders as Javelin orange. */
+      .battery-cell.offensive { border-color: #ff9933; }
+      .battery-cell.offensive.destroyed { border-color: #553311; background: #221100; }
+      .battery-cell.offensive .missile-slot.loaded { background: #ff9933; }
+      .battery-cell.offensive .missile-slot.reloading { background: #ff9933; }
+      .battery-cell.offensive .missile-slot.empty { border-color: #553311; }
+      /* Command centers (win-condition objectives): solid brass/gold cells,
+         no missile sub-slots. Lose all three and the faction is defeated. */
+      .cc-cell {
+        width: 14px;
+        height: 20px;
+        border: 1px solid var(--legend-frame);
+        background: rgba(236, 205, 132, 0.85);
+        box-sizing: border-box;
+      }
+      .cc-cell.rebuilding { background: rgba(236, 205, 132, 0.3); }
+      .cc-cell.destroyed { border-color: #444; background: #222; }
+
+      /* Game-over (victory/defeat) modal — brass family, same recipe as
+         #new-game-panel but non-dismissable via backdrop. */
+      #game-over-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(4, 6, 14, 0.65);
+        backdrop-filter: blur(3px);
+        z-index: 10000;
+      }
+      #game-over-backdrop.active { display: block; }
+      #game-over-panel {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        min-width: 420px;
+        max-width: 520px;
+        padding: 26px 30px;
+        color: var(--legend-text);
+        font-family: var(--hud-font);
+        text-align: center;
+        background:
+          linear-gradient(180deg, var(--legend-panel-top), var(--legend-panel-bottom)),
+          radial-gradient(circle at top, rgba(255, 221, 148, 0.08), transparent 42%);
+        border: 1px solid var(--legend-frame);
+        border-radius: 14px;
+        box-shadow: var(--legend-shadow);
+        backdrop-filter: blur(10px);
+        overflow: hidden;
+        z-index: 10001;
+      }
+      #game-over-panel.active { display: block; }
+      #game-over-panel::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(125deg, rgba(255, 228, 168, 0.1), transparent 30%),
+          repeating-linear-gradient(
+            115deg,
+            rgba(255, 255, 255, 0.02) 0,
+            rgba(255, 255, 255, 0.02) 2px,
+            transparent 2px,
+            transparent 9px
+          );
+        opacity: 0.7;
+        pointer-events: none;
+        z-index: 0;
+      }
+      #game-over-panel > * {
+        position: relative;
+        z-index: 1;
+      }
+      .go-title {
+        font-size: 30px;
+        font-weight: 700;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+      .go-title.go-victory {
+        color: #f2dfa8;
+        text-shadow: 0 0 18px rgba(220, 180, 90, 0.6);
+      }
+      .go-title.go-defeat {
+        color: #e0604c;
+        text-shadow: 0 0 18px rgba(224, 96, 76, 0.55);
+      }
+      .go-subtitle {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        opacity: 0.85;
+        margin-bottom: 2px;
+      }
+      .go-duration {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        opacity: 0.6;
+        margin-bottom: 16px;
+      }
+      .go-stats {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 4px 18px;
+        margin: 0 auto 18px;
+        width: fit-content;
+        text-align: right;
+      }
+      .go-cell {
+        font-size: 12px;
+        letter-spacing: 0.05em;
+      }
+      .go-cell.go-label {
+        text-align: left;
+        opacity: 0.75;
+      }
+      .go-cell.go-header {
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid rgba(214, 178, 103, 0.22);
+        margin-bottom: 2px;
+      }
+      .go-cell.go-col-winner {
+        color: #f2dfa8;
+        text-shadow: 0 0 8px rgba(220, 180, 90, 0.45);
+      }
+      .go-buttons {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+      }
+      .go-btn {
+        font-family: var(--hud-font);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        padding: 8px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+        background: rgba(50, 40, 20, 0.9);
+        border: 1px solid var(--legend-frame);
+        color: var(--legend-text);
+      }
+      .go-btn.go-btn-primary {
+        background: var(--active-bg);
+        border-color: var(--active-border);
+        color: var(--active-text);
+        box-shadow: var(--active-glow);
+      }
+      .go-btn:hover { filter: brightness(1.25); }
+    </style>
+    <script type="module" crossorigin src="/assets/index-P04ROZSY.js"></script>
+  </head>
+  <body>
+    <div id="loading-screen">
+      <canvas id="loading-canvas"></canvas>
+      <div class="loading-card">
+        <div class="loading-system">
+          <div class="loading-title" aria-label="Synodic">
+            <span class="title-pre" aria-hidden="true">Syn</span>
+            <span class="title-o" aria-hidden="true"></span>
+            <span class="title-post" aria-hidden="true">dic</span>
+          </div>
+        </div>
+        <div class="loading-sub">Loading</div>
+        <div class="loading-hint">Enter</div>
+      </div>
+    </div>
+    <div id="ui-overlay">
+      <div class="slider-group" id="time-speed-row">
+        <label id="time-speed-label">Time Speed</label>
+        <input type="range" id="time-slider" min="0" max="1" step="0.01" value="0.13" />
+        <span class="value" id="time-value">1.0x</span>
+      </div>
+      <div id="stats"></div>
+      <div id="camera-debug"></div>
+    </div>
+    <div id="bug-counter" title="Bug reports accepted / fired">bugs: 0/0</div>
+    <button id="god-mode-toggle" title="Show all ships and structures regardless of faction sensors">God Mode</button>
+    <select id="driver-select" title="Driver for the selected faction" disabled>
+      <option value="human">Human Player</option>
+      <option value="simple">Simple NPC</option>
+      <option value="strategy">Strategic NPC</option>
+      <option value="hunter">Hunter NPC (v2)</option>
+      <option value="chaos">Chaos Monkey</option>
+    </select>
+    <div id="debug-snapshot" title="Copy debug snapshot to clipboard">&#128270;</div>
+    <div id="copy-logs" title="Copy logs to clipboard">&#128203;</div>
+    <div id="music-controls">
+      <div id="music-toggle" title="Mute / unmute">&#9835;</div>
+      <div id="music-skip" title="Next track">⏭</div>
+    </div>
+    <div id="build-panel"></div>
+    <div id="hotkey-panel">
+      <h3>Hotkeys</h3>
+      <div class="hotkey-row"><span class="hotkey-key">Shift+Drag</span><span class="hotkey-desc">Box select ships</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Shift+Click</span><span class="hotkey-desc">Toggle ship in selection</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">R</span><span class="hotkey-desc">Re-route selected ship(s)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Click body</span><span class="hotkey-desc">Orbit / heliocentric orbit (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Shift+Click</span><span class="hotkey-desc">Slingshot via planet (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">E</span><span class="hotkey-desc">Toggle elliptical orbit (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">T</span><span class="hotkey-desc">Toggle Fastest / Efficient (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">I</span><span class="hotkey-desc">Intercept mode (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Esc</span><span class="hotkey-desc">Cancel / go back (in routing)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">A</span><span class="hotkey-desc">Attack / offensive fire (select platform, then click target)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">]</span><span class="hotkey-desc">Cycle posture: Offensive / Defensive / Stealth (<kbd>[</kbd> reverses)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">P</span><span class="hotkey-desc">Pause / resume simulation</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">- / =</span><span class="hotkey-desc">Time-warp slower / faster (<kbd>0</kbd> resets to 1×)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">F</span><span class="hotkey-desc">Follow selected target</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">WASD / Arrows</span><span class="hotkey-desc">Pan camera (WASD only when no mode owns input)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">MMB Drag</span><span class="hotkey-desc">Pan camera (grab-the-world)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Ctrl+RMB Hold</span><span class="hotkey-desc">Continuous direct-thrust steering (hold-burn divert)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">B</span><span class="hotkey-desc">Build mode (select Earth/Mars first)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">D</span><span class="hotkey-desc">Sentinel (in build mode)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">A</span><span class="hotkey-desc">Battle Station (in build mode)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Y</span><span class="hotkey-desc">Shipyard (in build mode)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">L</span><span class="hotkey-desc">Supply line overlay</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">M</span><span class="hotkey-desc">Tactical overlay (sensors + missiles)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">Y</span><span class="hotkey-desc">Transfer heatmap (Earth/Mars Δv advantage)</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">?</span><span class="hotkey-desc">Toggle this panel</span></div>
+      <div class="hotkey-row"><span class="hotkey-key">`</span><span class="hotkey-desc">Performance overlay</span></div>
+    </div>
+    <div id="overlay-banner"></div>
+    <div id="overlay-legend"></div>
+    <div id="perf-overlay"></div>
+    <div id="planning-panel">
+      <div class="pp-header">
+        <span class="pp-title">Trajectory Shaping</span>
+        <span class="pp-ship-name" id="pp-ship-name"></span>
+      </div>
+      <div class="pp-info-row">
+        <span class="pp-label">Destination</span>
+        <span class="pp-value" id="pp-destination"></span>
+      </div>
+      <div class="pp-info-row">
+        <span class="pp-label">Departure ΔV</span>
+        <span class="pp-value" id="pp-dv1"></span>
+      </div>
+      <div class="pp-info-row">
+        <span class="pp-label">Arrival ΔV</span>
+        <span class="pp-value" id="pp-dv2"></span>
+      </div>
+      <div class="pp-info-row">
+        <span class="pp-label">Total ΔV</span>
+        <span class="pp-value" id="pp-deltav"></span>
+      </div>
+      <div class="pp-info-row">
+        <span class="pp-label">Transit</span>
+        <span class="pp-value" id="pp-transit"></span>
+      </div>
+      <!-- Multi-ship aggregate readout — hidden in single-ship sessions. -->
+      <div class="pp-group-summary" id="pp-group-summary" hidden>
+        <span class="pp-group-count" id="pp-group-count"></span>
+        <span class="pp-group-pill pp-pill-green" id="pp-group-green" hidden></span>
+        <span class="pp-group-pill pp-pill-yellow" id="pp-group-yellow" hidden></span>
+        <span class="pp-group-pill pp-pill-red" id="pp-group-red" hidden></span>
+        <span class="pp-group-dv" id="pp-group-dv"></span>
+      </div>
+      <div class="pp-group-rows" id="pp-group-rows" hidden></div>
+      <div class="pp-slider-row" id="pp-arrival-row">
+        <label class="pp-slider-label">Arrival point</label>
+        <input type="range" id="pp-arrival-slider" min="0" max="360" step="0.5" value="0" />
+        <span class="pp-slider-value" id="pp-arrival-value">0°</span>
+      </div>
+      <div class="pp-slider-row" id="pp-tof-row">
+        <label class="pp-slider-label">TOF</label>
+        <input type="range" id="pp-tof-slider" min="0" max="1" step="0.001" value="0.5" />
+        <span class="pp-slider-value" id="pp-tof-value">—</span>
+        <span class="pp-slider-value" id="pp-cycle-badge" hidden>+1 orbit</span>
+      </div>
+      <div class="pp-divider"></div>
+      <div class="pp-slider-row">
+        <label class="pp-slider-label">Scrubber</label>
+        <input type="range" id="pp-scrub-slider" min="0" max="1" step="0.001" value="0" />
+        <span class="pp-slider-value" id="pp-scrub-value"></span>
+      </div>
+      <div class="pp-status" id="pp-status"></div>
+      <div class="pp-buttons">
+        <button class="pp-btn pp-reset" id="pp-reset">Reset</button>
+        <button class="pp-btn pp-cancel" id="pp-cancel">Cancel</button>
+        <button class="pp-btn pp-accept" id="pp-accept">Accept</button>
+      </div>
+    </div>
+    <div id="command-card"></div>
+    <div id="bottom-bar">
+      <div id="bottom-bar-left">
+        <div id="minimap-panel">
+          <div id="minimap-container"><canvas id="minimap-canvas"></canvas></div>
+          <div id="minimap-view-btns">
+            <button id="minimap-perspective-btn" class="minimap-view-btn">Perspective</button>
+            <button id="minimap-plan-btn" class="minimap-view-btn">Solar North</button>
+          </div>
+        </div>
+      </div>
+      <div id="bottom-bar-center">
+        <div id="preview-grid-container">
+          <canvas id="preview-grid-canvas"></canvas>
+        </div>
+        <div id="focused-info-panel"></div>
+      </div>
+      <div id="game-controls"></div>
+      <div id="bottom-bar-right"></div>
+    </div>
+  </body>
+</html>
